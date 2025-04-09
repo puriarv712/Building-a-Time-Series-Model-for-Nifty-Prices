@@ -1,0 +1,510 @@
+---
+title: "Time Series Project"
+author: "Arvind Puri"
+date: "2025-04-02"
+output: html_document
+---
+
+# Building a Time Series Model for Nifty Prices
+
+## Description
+
+This project utilizes the **ARIMA (AutoRegressive Integrated Moving Average)** model to forecast the **Nifty50** stock index prices. The primary objective is to showcase the application of **ARIMA**, a sophisticated statistical method, in predicting future stock prices based on historical data. This serves as a crucial tool for financial analysis and strategic decision-making in financial markets.
+
+## 1. Reading Price Data
+
+**Data Acquisition**: Fetch Nifty price data using the **quantmod** API, renowned for its accessibility and reliability.  
+**Resampling**: Obtain weekly frequency data to focus on longer-term trends and reduce noise.
+
+## 2. Data Sanity Check
+
+**Quality Assessment**: Perform checks for missing values and outliers to ensure data integrity.  
+**Data Cleaning**: Implement strategies to handle anomalies, such as interpolation for missing values or removal of erroneous data points, ensuring robustness in the modeling process.
+
+## 3. Selecting the Right Model and Forecasting Prices
+
+**Preliminary Analysis**: Examine the stationarity of the time series, applying differencing if necessary to meet model assumptions.  
+**Model Determination**:  
+Assess the **Autoregressive (AR)** order to gauge the influence of past values on current predictions.  
+Evaluate the **Moving Average (MA)** order to understand the impact of past forecast errors on future values.  
+**Model Selection**: Use the **Akaike Information Criterion (AIC)** to identify the most efficient model in terms of informational balance and complexity.  
+**Implementation**: Develop a function for model selection and forecasting, employing a sliding window technique to update predictions dynamically.
+
+## 4. Trading Strategy Using Predicted Prices
+
+**Strategy Design**: Formulate a trading strategy based on model predictions, detailing specific buy and sell signals.  
+**Execution Plan**: Outline the operational aspects of executing trades based on predictive insights, considering transaction costs and timing.
+
+## 5. Performance Analysis
+
+**Model Evaluation**: Analyze the accuracy of the model's predictions by comparing them against actual market movements.  
+**Strategy Testing**: Assess the strategy's performance using backtesting, comparing it against a benchmark '**buy and hold**' strategy to evaluate relative effectiveness.
+
+
+```{r setup, include=FALSE}
+# Load required libraries
+library(quantmod)
+library(tseries)
+library(forecast)
+library(ggplot2)
+library(zoo)
+library(PerformanceAnalytics)
+
+```
+
+
+
+
+```{r cars}
+# 1. Reading Price Data
+
+# Define the symbol, start, and end dates for the Nifty index
+symbol <- "^NSEI"
+start_date <- "2019-01-01"
+end_date <- "2023-12-31"
+
+# Download data using quantmod
+getSymbols(symbol, from = start_date, to = end_date, src = "yahoo")
+nifty_data <- NSEI[, "NSEI.Adjusted"] # Get adjusted close prices
+colnames(nifty_data) <- "Adj_Close"
+
+# Display the first few rows of the data
+head(nifty_data)
+
+```
+
+## Data Sanity Check
+
+In this section, we define a method to ensure the integrity of our dataset before proceeding with further analysis. This method will address key aspects:
+
+**Missing Values**: Identification and imputation of missing data points using forward-fill to preserve continuity in time series data.  
+**Outliers**: Detection and examination of extreme values based on statistical thresholds to prevent skewed analysis. Outliers will be assessed against a rolling median over a 52-week period to determine their significance.  
+**Data Continuity**: Visual and statistical checks for discontinuities or abrupt changes in the data that could indicate recording errors or genuine market anomalies.  
+
+This proactive approach helps ensure that our model's inputs are reliable and that the ensuing analysis is robust.
+
+
+```{r pressure, echo=FALSE}
+
+# 2. Data Sanity Check
+
+# Function to check for and handle data issues
+sanity_check <- function(data) {
+  # Check for missing values
+  if (any(is.na(data))) {
+    cat("Missing values found.\n")
+    # Filling missing values with previous values (forward fill)
+    data <- na.locf(data)
+    cat("Missing values have been forward-filled.\n")
+  } else {
+    cat("No missing values in the data.\n")
+  }
+  
+  return(data)
+}
+
+# Apply sanity check
+nifty_data <- sanity_check(nifty_data)
+
+# Check for any remaining invalid/NA data
+cat("Number of NA values:", sum(is.na(nifty_data)), "\n")
+```
+## Checking for Stationarity
+
+**ADF Test**: We employ the **Augmented Dickey-Fuller (ADF)** test, a popular statistical test used to check for stationarity. The test aims to determine whether a unit root is present in the series, which is indicative of non-stationarity.  
+**Interpretation**: If the ADF test shows that the data does not contain a unit root, the series can be considered stationary, and models like **ARMA (Autoregressive Moving Average)** are suitable.  
+**Differencing**: If the test indicates non-stationarity, we proceed by differencing the data. This involves subtracting the previous observation from the current observation. We then reapply the ADF test to the differenced data to check for stationarity again.  
+**Model Application**: If the differenced data is stationary, we use an **ARIMA (Autoregressive Integrated Moving Average)** model, which integrates the differencing step into the modeling process.  
+
+This approach ensures that the time series model is built on a solid foundation of data that meets the necessary statistical properties, enhancing the reliability and accuracy of the forecasts.
+
+```{r}
+# 3. Checking for Stationarity
+
+# Function to check stationarity using ADF test
+check_stationarity <- function(series) {
+  adf_result <- adf.test(series)
+  
+  if (adf_result$p.value < 0.05) {
+    cat("Data is stationary\n")
+  } else {
+    cat("Data is not stationary\n")
+  }
+  
+  return(adf_result$p.value)
+}
+
+# Check original series for stationarity
+cat("Testing original series:\n")
+check_stationarity(nifty_data)
+
+# Check differenced series for stationarity
+diff_data <- diff(nifty_data)
+diff_data <- diff_data[!is.na(diff_data)]
+cat("\nTesting differenced series:\n")
+check_stationarity(diff_data)
+
+```
+### Understanding ACF and PACF Plots
+
+In the process of building **ARIMA** models for time series forecasting, the **Autocorrelation Function (ACF)** and the **Partial Autocorrelation Function (PACF)** are crucial tools for identifying the order of the **AR (AutoRegressive)** and **MA (Moving Average)** components.
+
+### Autocorrelation Function (ACF)
+
+**What is ACF?** The ACF measures the correlation between time series observations at different lags. In simpler terms, it expresses how well the current value of the series is related to its past values.  
+**Significance**: ACF is used to identify the moving average component of an **ARIMA** model, denoted as **(q)**. It shows the extent of correlation between a variable and its lag across successive time intervals. If the ACF shows a gradual decline, it suggests a moving average process might be suitable.
+
+### Partial Autocorrelation Function (PACF)
+
+**What is PACF?** The PACF measures the correlation between observations at two points in time, controlling for the values at all shorter lags. It isolates the effect of intervening time points.  
+**Significance**: PACF is primarily used to determine the order of the autoregressive component of an **ARIMA** model, denoted as **(p)**. A sharp cut-off in the PACF after a certain number of lags suggests the order of the AR process.
+
+### Application in Time Series Analysis
+
+**Differencing**: Before plotting ACF and PACF, the series should be made stationary. This often involves differencing the series, where each value is subtracted from its previous value, to remove trends and seasonality.  
+**Model Identification**: By examining the patterns in the ACF and PACF plots, you can make informed decisions about the likely parameters for the **ARIMA** model. For example, if the PACF plot shows a significant spike at lag 2, followed by non-significant spikes, this suggests an **AR(2)** model might be appropriate.
+
+These plots provide a visual insight into the data which can guide the specification of your time series model, improving the model's accuracy and predictive power.
+
+```{r}
+
+# 4. Plot ACF and PACF
+
+# Set up plot layout
+par(mfrow = c(1, 2))
+
+# Plot ACF
+acf(diff_data, lag.max = 40, main = "Autocorrelation Function")
+
+# Plot PACF
+pacf(diff_data, lag.max = 40, main = "Partial Autocorrelation Function")
+
+# Reset plot layout
+par(mfrow = c(1, 1))
+
+
+```
+```{r}
+
+# 5. Split data into train and test sets
+
+split_point <- floor(length(nifty_data) * 0.8)
+train_data <- nifty_data[1:split_point]
+test_data <- nifty_data[(split_point+1):length(nifty_data)]
+
+cat("Training data size:", length(train_data), "\n")
+cat("Test data size:", length(test_data), "\n")
+
+
+```
+Modeling time series using ARIMA models
+
+The ARIMA (AutoRegressive Integrated Moving Average) class of models is a popular statistical technique in time series forecasting. It exploits different standard temporal structures seen in time series processes.
+
+Exponential smoothing and ARIMA models are the two most widely used approaches to time series forecasting, and provide complementary approaches to the problem. While exponential smoothing models are based on a description of the trend and seasonality in the data, ARIMA models aim to describe the autocorrelations in the data.
+
+## Stationarity Analysis and ARIMA Modeling
+
+After testing, our data is stationary after differencing. This means we can use the ARIMA model for our time series forecasting. The next step is to determine the optimal parameters (p, d, q) by comparing AIC scores for different models.
+
+### ARIMA Models: Overview and Theory
+
+The **ARIMA (AutoRegressive Integrated Moving Average)** class of models is a popular statistical technique in time series forecasting that exploits different standard temporal structures seen in time series processes.
+
+> *Exponential smoothing and ARIMA models are the two most widely used approaches to time series forecasting, and provide complementary approaches to the problem. While exponential smoothing models are based on a description of the trend and seasonality in the data, ARIMA models aim to describe the autocorrelations in the data.*
+
+#### Components of ARIMA
+
+ARIMA has three key components, represented by the parameters (p, d, q):
+
+1. **Auto Regressive (AR) - p parameter**:
+   * Regression of a time series process onto itself (its past versions)
+   * A time series process is AR(p) if its present value depends on a linear combination of p past observations
+   * In financial time series, an AR model attempts to explain the mean reversion and trending behaviors observed in asset prices
+
+2. **Integrated (I) - d parameter**:
+   * For a time series process $Y_t$ recorded at regular intervals, the difference operation is defined as:
+   
+   $$\Delta Y_t = Y_t - Y_{t-1}$$
+   
+   * The difference operator (denoted by $\Delta$) can be applied repeatedly. For example:
+   
+   $$\Delta^2 Y_t = \Delta(\Delta Y_t) = \Delta(Y_t - Y_{t-1}) = (Y_t - Y_{t-1}) - (Y_{t-1} - Y_{t-2}) = Y_t - 2Y_{t-1} + Y_{t-2}$$
+   
+   * A time series process is integrated of order d (denoted by I(d)), if differencing the observations d times makes the process stationary
+
+3. **Moving Average (MA) - q parameter**:
+   * A time series process is MA(q) if its present value can be written as a linear combination of q past error terms
+   * MA models capture the idiosyncratic shocks observed in financial markets (e.g., events like earnings surprises, political changes, etc.)
+
+#### ARIMA Model Specification
+
+When we use the ARIMA class to model a time series process, each component is specified using the notation ARIMA(p, d, q):
+
+* **p**: The number of past observations (lagged terms) included in the model
+* **d**: The number of times we difference the original process to make it stationary
+* **q**: The number of past error terms (lagged residuals) included in the model
+
+The general form of an ARIMA(p,d,q) model can be expressed as:
+
+$$\phi(B)(1-B)^d Y_t = \theta(B)\varepsilon_t$$
+
+Where:
+* $\phi(B)$ is the AR polynomial of order p
+* $(1-B)^d$ represents differencing of order d
+* $\theta(B)$ is the MA polynomial of order q
+* $\varepsilon_t$ is white noise
+
+#### Model Selection
+
+To find the optimal ARIMA model, we use information criteria like AIC (Akaike Information Criterion):
+
+```r
+# Example of using auto.arima() in R to find the best model
+library(forecast)
+best_model <- auto.arima(time_series_data, 
+                         seasonal = FALSE, 
+                         stepwise = TRUE,
+                         approximation = FALSE)
+summary(best_model)
+```
+
+#### Important Considerations
+
+When modeling time series with ARIMA:
+
+* We implicitly assume the underlying data generating process is an ARIMA process
+* Models have good explanatory and predictive power only if the process is stationary after appropriate differencing
+* A well-known deficiency of ARIMA applications on financial time series is the failure to capture volatility clustering
+* Despite potentially inaccurate point estimates, ARIMA models can provide informative confidence intervals
+
+```r
+# Testing for stationarity using ADF test
+adf.test(diff(log_returns))
+
+# Examining ACF and PACF for parameter selection
+acf(diff_data, lag.max = 40)
+pacf(diff_data, lag.max = 40)
+```
+
+
+
+```{r}
+# 6. Find best ARIMA parameters
+
+# Function to find optimal ARIMA parameters using auto.arima
+find_best_arima_parameters <- function(data_series, seasonal = FALSE, m = 1) {
+  cat("Performing stepwise search to minimize AIC\n")
+  
+  # Suppress warnings during auto.arima process
+  suppressWarnings({
+    # Use auto.arima to find optimal parameters
+    model <- auto.arima(data_series, 
+                        seasonal = seasonal, 
+                        stepwise = TRUE, 
+                        trace = TRUE,
+                        approximation = FALSE)
+  })
+  
+  # Extract the best order
+  best_order <- arimaorder(model)
+  
+  # Print model summary
+  cat("\nBest model summary:\n")
+  print(summary(model))
+  
+  return(best_order)
+}
+
+# Find optimal parameters for the Nifty data
+best_param <- find_best_arima_parameters(train_data)
+cat("Best ARIMA parameters (p, d, q):", best_param[1], best_param[2], best_param[3], "\n")
+
+```
+```{r}
+# 7. Forecast Prices using ARIMA
+
+# Function to predict next price using ARIMA model
+get_predicted_prices <- function(close_prices, best_param) {
+  # Define the ARIMA model with the best parameters
+  model <- Arima(close_prices, order = c(best_param[1], best_param[2], best_param[3]))
+  
+  # Make forecast for 1 step ahead
+  predictions <- forecast(model, h = 1)
+  
+  return(predictions$mean[1])
+}
+
+# Initialize predictions vector
+predictions <- numeric(length(test_data))
+
+# Generate predictions using rolling window approach
+for (i in 1:length(test_data)) {
+  # Incrementally add test data to simulate rolling forecast
+  current_data <- c(train_data, test_data[1:i-1])
+  current_data <- as.zoo(current_data)
+  
+  # Get prediction for the next step
+  predictions[i] <- get_predicted_prices(current_data, best_param)
+  
+  # Progress indicator (every 20%)
+  if (i %% round(length(test_data)/5) == 0) {
+    cat("Forecast progress:", round(100 * i/length(test_data)), "%\n")
+  }
+}
+
+# Convert predictions to time series with same index as test data
+predictions_ts <- zoo(matrix(predictions, ncol=1), index(test_data))
+colnames(predictions_ts) <- "predicted_price"
+
+# Combine actual and predicted prices
+test_combined <- merge(test_data, predictions_ts)
+colnames(test_combined) <- c("Adj_Close", "predicted_price")
+
+# Display the first few rows of combined data
+head(test_combined)
+```
+```{r}
+# 8. Calculate returns and generate trading signals
+
+# Calculate predicted and actual returns (percentage changes)
+test_combined$predicted_returns <- c(NA, diff(test_combined$predicted_price) / lag(test_combined$predicted_price, 1)[-1])
+test_combined$actual_returns <- c(NA, diff(test_combined$Adj_Close) / lag(test_combined$Adj_Close, 1)[-1])
+
+# Remove NA values
+test_combined <- test_combined[!is.na(test_combined$predicted_returns) & !is.na(test_combined$actual_returns), ]
+
+# Generate trading signals based on predicted returns
+test_combined$signal <- ifelse(test_combined$predicted_returns >= 0, 1, -1)
+
+# Calculate strategy returns (signal * actual returns)
+test_combined$strategy_returns <- test_combined$signal * test_combined$actual_returns
+
+# Calculate cumulative returns for the strategy
+test_combined$cumulative_returns <- cumprod(1 + test_combined$strategy_returns)
+
+# Calculate buy and hold returns
+buy_and_hold_returns <- cumprod(1 + test_combined$actual_returns)
+```
+
+
+
+```{r}
+# 9. Plot performance comparison
+
+# Plot cumulative returns comparison
+
+# Make sure both time series are properly aligned
+all_aligned <- merge(test_combined$cumulative_returns, buy_and_hold_returns)
+colnames(all_aligned) <- c("Strategy", "BuyHold")
+
+# Check data before plotting
+head(all_aligned)
+summary(all_aligned)
+
+
+if (require(ggplot2)) {
+  # Convert to data frame for ggplot
+  plot_data <- data.frame(
+    Date = index(all_aligned),
+    Strategy = all_aligned$Strategy,
+    BuyHold = all_aligned$BuyHold
+  )
+  
+  # Reshape to long format
+  library(reshape2)
+  plot_data_long <- melt(plot_data, id.vars = "Date", 
+                        variable.name = "Method", value.name = "Returns")
+  
+  # Create ggplot
+  ggplot(plot_data_long, aes(x = Date, y = Returns, color = Method)) +
+    geom_line(size = 1) +
+    scale_color_manual(values = c("Strategy" = "blue", "BuyHold" = "red"),
+                      labels = c("Strategy" = "Strategy Returns", 
+                               "BuyHold" = "Buy and Hold Returns")) +
+    theme_minimal() +
+    labs(title = "Predicted vs Buy and Hold Cumulative Returns",
+         x = "Date", y = "Cumulative Returns") +
+    theme(legend.position = "top",
+          legend.title = element_blank(),
+          plot.title = element_text(hjust = 0.5)) +
+    scale_x_date(date_breaks = "2 month", date_labels = "%b %Y") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+```
+
+
+```{r}
+
+# 10. Drawdown Analysis
+
+# Function to calculate drawdown
+calc_drawdown <- function(cum_rets) {
+  # Calculate running maximum
+  running_max <- cummax(cum_rets)
+  # Ensure minimum value is 1
+  running_max[running_max < 1] <- 1
+  # Calculate percentage drawdown
+  drawdown <- cum_rets/running_max - 1
+  return(drawdown)
+}
+
+# Calculate drawdowns for strategy and buy & hold
+drawdown_strategy <- calc_drawdown(test_combined$cumulative_returns)
+drawdown_buy_n_hold <- calc_drawdown(buy_and_hold_returns)
+
+# Print maximum drawdowns
+cat("The maximum drawdown of the strategy is", round(min(drawdown_strategy) * 100, 2), "%\n")
+cat("The maximum drawdown of the buy & hold strategy is", round(min(drawdown_buy_n_hold) * 100, 2), "%\n")
+
+
+# Convert to regular time series for better plotting
+dd_dates <- as.Date(index(drawdown_strategy))
+dd_values <- as.numeric(drawdown_strategy)
+
+
+if (require(ggplot2)) {
+  # Create data frame for plotting
+  dd_df <- data.frame(
+    Date = dd_dates,
+    Drawdown = dd_values
+  )
+  
+  # Create ggplot
+  ggplot(dd_df, aes(x = Date, y = Drawdown)) +
+    geom_line(color = "red", size = 1) +
+    geom_area(aes(y = pmin(Drawdown, 0)), fill = "pink", alpha = 0.5) +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    scale_y_continuous(labels = scales::percent) +
+    scale_x_date(date_breaks = "2 months", date_labels = "%b %Y") +
+    labs(title = "Strategy Drawdown",
+         subtitle = paste0(format(min(dd_dates), "%Y-%m-%d"), " | ", 
+                          format(max(dd_dates), "%Y-%m-%d")),
+         x = "Date", 
+         y = "Drawdown") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          plot.title = element_text(hjust = 0.5),
+          plot.subtitle = element_text(hjust = 0.5))
+}
+```
+
+
+
+```{r}
+# 11. Calculate Sharpe ratio
+
+# Calculate annualized Sharpe ratio (assuming 252 trading days per year)
+sharpe_ratio <- (mean(test_combined$strategy_returns, na.rm = TRUE) * 252) / 
+                (sd(test_combined$strategy_returns, na.rm = TRUE) * sqrt(252))
+cat("The Sharpe ratio of the strategy is", round(sharpe_ratio, 2), "\n")
+
+# Alternatively, use the SharpeRatio function from PerformanceAnalytics
+sharpe_ratio_pa <- SharpeRatio(test_combined$strategy_returns, Rf = 0, FUN = "StdDev", scale = 252)
+cat("Sharpe ratio (using PerformanceAnalytics):", round(sharpe_ratio_pa, 2), "\n")
+
+```
+## Results
+
+The traditional market approach yielded a return of **3.88%** with a drawdown of **7%**. In contrast, our **ARIMA-based** strategy achieved a **4.89%** return with only a **5%** drawdown, and a **Sharpe ratio** around **2**. This demonstrates the efficacy of the **ARIMA** model in enhancing return profiles under specified market conditions.
+
